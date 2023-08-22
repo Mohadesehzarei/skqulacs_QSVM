@@ -1,0 +1,123 @@
+---
+title: "Determination of DEGs"
+author: "Mohadeseh Zarei Ghobadi"
+date: "2023-08-22"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+```{r}
+rm(list=ls())
+#------------------------
+
+library(limma)
+library(edgeR)
+library(dplyr)
+library(ggplot2)
+
+setwd("")
+
+count_table=read.csv("data_expression.csv",row.names = 1) #(genes * samples[tumor+healthy])
+count_table=round(((2^count_table) - 1), 0)
+typeof(count_table)
+
+col_tumor_expression=rep("tumor", ) #number of tumor samples
+col_healthy_expression=rep("healthy",) #number of healthy samples
+samples=c(col_tumor_expression,col_healthy_expression)
+sample_info=as.data.frame(cbind(colnames(count_table),smaples))
+rownames(sample_info)=sample_info$V1
+sample_info[,1]=NULL
+
+# REMOVES ALL ROWS WITH ZERO SUM
+count_found_new=count_table[apply(count_table[,-1], 1, function(x) !all(x==0)),]
+dim(count_found_new)
+
+
+group_ <- as.factor(sample_info[,"samples"])
+genes_=rownames(count_found_new)
+data=DGEList(count_found_new,samples = sample_info, group =group_,genes = genes_ )
+dim(data)
+######################################################################################
+#GENE FILTERING
+apply(data$counts, 2, sum) # total gene counts per sample
+keep <- rowSums(cpm(data)>100) >= 2
+data <- data[keep,]
+dim(data)
+data$samples$lib.size <- colSums(data$counts)
+data$samples
+####################################################################################################################
+##FILTERING THE GENES WITH LOW VARIANCE 
+#USING "FOR" LOOP, STANDARD DEVIATION OF ALL GENES (THERE ALREADY EXISTS A FORMULA FOR)
+gene_cv <- vector(mode="numeric",length = nrow(data$counts))
+for(i in 1:nrow(data$counts)){
+  gene_cv[i]=sqrt(var(data$counts[i,]))/mean(data$counts[i,])
+}
+plot(gene_cv)
+summary(gene_cv)
+
+remove.gene_all=gene_cv<quantile(gene_cv)[2]#LESS THAN 1ST QUARTILE ARE ALL REMOVED
+table(remove.gene_all)
+#INNER-VARIance
+data=data[!remove.gene_all,, keep.lib.sizes=FALSE] 
+
+dim(data)
+####################################################################################################################
+#NORMALIZATION
+data=calcNormFactors(data,method = "TMM")
+data=estimateCommonDisp(data)
+data=estimateTagwiseDisp(data,trend="movingave")
+Normal_expr <-data$pseudo.counts
+logNormal_expr <- log(Normal_expr+1)
+
+####################################################################################################################
+distance_=as.dist(1-cor(logNormal_expr,method = "pearson"))
+hc=hclust(distance_, method = "ward.D2")
+d <- dendrapply(as.dendrogram(hc), labelCol)
+pdf("finalHclustPlot_2.pdf", width = 80, height = 40)
+plot(d)
+dev.off()
+####################################################################################################################
+#DIFFERENTIALLY EXPRESSED GENES DETECTION
+
+##edgeR method
+exp_test=exactTest(data)
+deg_R=topTags(exp_test, n=Inf, adjust.method="BH")
+write.csv(deg_R,file="DEGs_edgeR.csv")
+
+idx.sign <- which(deg_R$table$FDR < 0.05 & 
+                    abs(deg_R$table$logFC) > 3)
+deg <- deg_R$table[idx.sign,]
+
+
+#LIMMA VOOM METHOD
+design_ <- model.matrix(~data$samples$group)
+
+voom_ <- voom(data,design = design_, plot=TRUE)
+fit=lmFit(voom_)
+efit <- eBayes(fit)
+plotSA(efit)
+deg_v=topTable(efit,number = Inf)
+write.csv(deg_v,"DEGs_limmavoom.csv")
+
+
+idx.sign <- which(deg_v$adj.P.Val < 0.05 & 
+                    abs(deg_v$logFC) > 3)
+deg <- deg_v[idx.sign,]
+
+write.csv(deg,file="DEGs_selected_limma.csv")
+
+####################
+# Common DEGs
+
+Data=logNormal_expr
+total<- as.data.frame(Reduce(intersect,list(DEGs_edgeR$genes, DEGs_limma$genes)))
+keeps=rownames(Data) %in% total[,1]
+table(keeps)
+Data_expression_DEGs=Data[keeps,]
+
+```
